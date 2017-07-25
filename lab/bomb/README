@@ -1,1 +1,18 @@
 This is an x86-64 bomb for self-study students. 
+
+
+phase_4: 
+func(x,first,second){
+	int temp = (second-first)/2 + first;
+	if(temp <= x){
+		if(temp == x) return 0;
+		else return 2*func(x,(second-first)/2 + 1, second);
+	}else{
+		return 2*func(x,lo,(second-first)/2-1) + 1;
+	}
+}
+정도로 표현해 볼 수 있다. phase_4에서는
+func(첫번째 인자,0,14)를 넘겨주고 그 결과로 0이 반환되기를 원하므로 한번에
+temp값과 동일한 x를 넘겨주어야 하므로 x = 7이 된다.
+
+또한 두번째 인자는 0을 받기를 원하므로 정답은 7 0이 된다.
