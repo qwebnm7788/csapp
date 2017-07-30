@@ -20,3 +20,8 @@ mysplit.c	# Forks a child that spins for <n> seconds
 mystop.c        # Spins for <n> seconds and sends SIGTSTP to itself
 myint.c         # Spins for <n> seconds and sends SIGINT to itself
 
+
+수정해야 할 점
+
+명령어를 키보드로 2번연속 입력받으면 무한루프에 걸린다 (fgets 함수 호출에서 무한루프에 빠지는듯..?)
+	-> fork로 자식 프로세스를 생성한 후 command not found에 걸린 후에 child를 exit 등으로 죽였어야 했다.
