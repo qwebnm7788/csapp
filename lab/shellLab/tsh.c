@@ -41,6 +41,7 @@ char prompt[] = "tsh> ";    /* command line prompt (DO NOT CHANGE) */
 int verbose = 0;            /* if true, print additional output */
 int nextjid = 1;            /* next job ID to allocate */
 char sbuf[MAXLINE];         /* for composing sprintf messages */
+int termSig;
 
 struct job_t {              /* The job struct */
 	pid_t pid;              /* job PID */
@@ -171,7 +172,6 @@ void eval(char *cmdline)
 	bg = parseline(cmdline,argv);	//parseline으로 매개변수를 분리시켜준다.
 
 	if(argv[0] == NULL) return;		//아무것도 입력되지 않는 경우 종료
-
 	if(!builtin_cmd(argv)){			//builtin_cmd였다면 바로 실행시켜준다(true(반환)
 		sigemptyset(&mask);			//mask 초기화
 		sigaddset(&mask,SIGCHLD);	//SIGCHLD 추가
@@ -192,30 +192,14 @@ void eval(char *cmdline)
 
 		if(!bg){
 			//foreground 작업인 경우 기다린다 (sigtstp 시그널에도 빠져나오기 위해서 WUNTRACED 옵션을 넣어주어야 함)
-			int status;
-			if(waitpid(pid,&status,WUNTRACED) < 0){
-				unix_error("waitpid() error");
-			}
-
-			if(WIFEXITED(status)){
-				deletejob(jobs,pid);
-			}
-			
-			if(WIFSIGNALED(status)){
-				deletejob(jobs,pid);
-			}
-			if(WIFSTOPPED(status)){
-				struct job_t *stopJob = getjobpid(jobs,pid);
-				stopJob->state = ST;
-			}
-
+			waitfg(pid);
 		}else{
 			//background 작업인 경우
 			struct job_t *job = getjobpid(jobs,pid);	
 			printf("[%d] (%d) %s", job->jid, job->pid, job->cmdline);
 
 		}
-		
+
 	}
 
 	return;
@@ -285,6 +269,7 @@ int parseline(const char *cmdline, char **argv)
 /* 
  * builtin_cmd - If the user has typed a built-in command then execute
  *    it immediately.  
+ *	builtin command 라면 바로 실행시키고 아니라면 0을 반환한다.
  */
 int builtin_cmd(char **argv) 
 {
@@ -300,11 +285,13 @@ int builtin_cmd(char **argv)
 	}else if(strcmp(argv[0],"bg") == 0){
 		//bg <job> command restarts <job> by sending it a SIGCONT signal, and then runs it in the background
 		//<job> argument can be either a PID or JID
-
+		do_bgfg(argv);
+		return 1;
 	}else if(strcmp(argv[0],"fg") == 0){
 		//fg <job> command restarts <job> by sending it a SIGCONT signal, and then runs it in the foreground
 		//<job> argument can be either a PID or JID
-
+		do_bgfg(argv);
+		return 1;
 	}
 	return 0;     /* not a builtin command */
 }
@@ -314,6 +301,42 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv) 
 {
+	if(argv[1] == NULL){
+		printf("%s command requires PID or %%jobid argument\n", argv[0]);
+		return;
+	}
+	struct job_t *job;
+	if(argv[1][0] == '%'){
+		//if given id type is JID
+		job = getjobjid(jobs,atoi((argv[1] + 1)));
+		if(job == NULL){
+			printf("%s: No such job\n", argv[1]);
+			return;
+		}
+	}else if(argv[1][0] >= '0' && argv[1][0] <= '9'){
+		//if given id type is PID
+		job = getjobpid(jobs,atoi(argv[1]));
+		if(job == NULL){
+			printf("(%s): No such process\n", argv[1]);
+			return;
+		}
+	}else{
+		printf("%s: argument must be a PID or %%jobid\n",argv[0]);
+		return;
+	}
+
+	if(strcmp(argv[0],"bg") == 0){
+		//bg command
+		job->state = BG;
+		kill(-(job->pid),SIGCONT);
+		printf("[%d] (%d) %s", job->jid, job->pid, job->cmdline);
+
+	}else{
+		//fg command
+		job->state = FG;
+		kill(-(job->pid),SIGCONT);
+		waitfg(job->pid);
+	}
 	return;
 }
 
@@ -322,6 +345,11 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
+	while(1){
+		sleep(1);
+		if(pid != fgpid(jobs))
+			break;
+	}
 	return;
 }
 
@@ -338,6 +366,29 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig) 
 {
+	pid_t pid;
+	int status;
+	while((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0){
+		if(WIFEXITED(status)){
+			deletejob(jobs,pid);
+		}else if(WIFSTOPPED(status)){
+			if(!termSig){
+				sigtstp_handler(SIGTSTP);
+				termSig = 0;
+			}
+			struct job_t *stopJob = getjobpid(jobs,pid);
+			stopJob->state = ST;
+		}else if(WIFSIGNALED(status)){
+			if(WTERMSIG(status) == SIGINT){
+				if(!termSig){
+					sigint_handler(SIGINT);
+					termSig = 0;
+				}
+			}
+		}else{
+			unix_error("Wrong signal");
+		}
+	}
 	return;
 }
 
@@ -351,9 +402,11 @@ void sigint_handler(int sig)
 	pid_t fg = fgpid(jobs);
 
 	if(fg){
-		kill(-fg,SIGINT);
 		printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(fg), fg, sig);
+		deletejob(jobs,fg);
+		kill(-fg,SIGINT);
 	}
+	termSig = 1;
 	return;
 }
 
@@ -367,9 +420,11 @@ void sigtstp_handler(int sig)
 	pid_t fg = fgpid(jobs);
 
 	if(fg){
-		kill(-fg,SIGTSTP);
+		getjobpid(jobs,fg)->state = ST;
 		printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(fg), fg, sig);
+		kill(-fg,SIGTSTP);
 	}
+	termSig = 1;
 	return;
 }
 
@@ -444,6 +499,8 @@ int deletejob(struct job_t *jobs, pid_t pid)
 
 	for (i = 0; i < MAXJOBS; i++) {
 		if (jobs[i].pid == pid) {
+			if(verbose)
+				printf("Deleted jobs [%d] %d %s\n", jobs[i].jid, jobs[i].pid, jobs[i].cmdline);
 			clearjob(&jobs[i]);
 			nextjid = maxjid(jobs)+1;
 			return 1;
