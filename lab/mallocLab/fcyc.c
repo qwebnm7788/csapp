@@ -1,42 +1,35 @@
-/*
- * fcyc.c - Estimate the time (in CPU cycles) used by a function f 
- * 
- * Copyright (c) 2002, R. Bryant and D. O'Hallaron, All rights reserved.
- * May not be used, modified, or copied without permission.
- *
- * Uses the cycle timer routines in clock.c to estimate the
- * the time in CPU cycles for a function f.
- */
+/* Compute time used by function f */
 #include <stdlib.h>
 #include <sys/times.h>
 #include <stdio.h>
 
-#include "fcyc.h"
 #include "clock.h"
+#include "fcyc.h"
 
-/* Default values */
-#define K 3                  /* Value of K in K-best scheme */
-#define MAXSAMPLES 20        /* Give up after MAXSAMPLES */
-#define EPSILON 0.01         /* K samples should be EPSILON of each other*/
-#define COMPENSATE 0         /* 1-> try to compensate for clock ticks */
-#define CLEAR_CACHE 0        /* Clear cache before running test function */
-#define CACHE_BYTES (1<<19)  /* Max cache size in bytes */
-#define CACHE_BLOCK 32       /* Cache block size in bytes */
+#define K 3
+#define MAXSAMPLES 20
+#define EPSILON 0.01 
+#define CLEAR_CACHE 0
+#define CACHE_BYTES (1<<19)
+#define CACHE_BLOCK 32
+#define MIN_TICKS 1000
+#define MIN_REPS 8
 
-static int kbest = K;
-static int maxsamples = MAXSAMPLES;
-static double epsilon = EPSILON;
-static int compensate = COMPENSATE;
+static long int kbest = K;
 static int clear_cache = CLEAR_CACHE;
-static int cache_bytes = CACHE_BYTES;
-static int cache_block = CACHE_BLOCK;
+static long int maxsamples = MAXSAMPLES;
+static double epsilon = EPSILON;
+static long int cache_bytes = CACHE_BYTES;
+static long int cache_block = CACHE_BLOCK;
+static long int min_reps = MIN_REPS;
+static long int min_ticks = MIN_TICKS;
+static double min_time = 0;
 
-static int *cache_buf = NULL;
+static long int *cache_buf = NULL;
 
 static double *values = NULL;
-static int samplecount = 0;
+static long int samplecount = 0;
 
-/* for debugging only */
 #define KEEP_VALS 0
 #define KEEP_SAMPLES 0
 
@@ -44,9 +37,13 @@ static int samplecount = 0;
 static double *samples = NULL;
 #endif
 
-/* 
- * init_sampler - Start new sampling process 
- */
+/* Initialize the minimum time threshold */
+static void init_min_time() {
+    if (min_time == 0.0)
+	min_time = min_ticks * timer_resolution;
+}
+
+/* Start new sampling process */
 static void init_sampler()
 {
     if (values)
@@ -61,12 +58,10 @@ static void init_sampler()
     samplecount = 0;
 }
 
-/* 
- * add_sample - Add new sample  
- */
+/* Add new sample.  */
 static void add_sample(double val)
 {
-    int pos = 0;
+    long int pos = 0;
     if (samplecount < kbest) {
 	pos = samplecount;
 	values[pos] = val;
@@ -87,26 +82,24 @@ static void add_sample(double val)
     }
 }
 
-/* 
- * has_converged- Have kbest minimum measurements converged within epsilon? 
- */
-static int has_converged()
+/* Have kbest minimum measurements converged within epsilon? */
+static long int has_converged()
 {
     return
 	(samplecount >= kbest) &&
 	((1 + epsilon)*values[0] >= values[kbest-1]);
 }
 
-/* 
- * clear - Code to clear cache 
- */
-static volatile int sink = 0;
+/* Code to clear cache */
+
+
+static volatile long int sink = 0;
 
 static void clear()
 {
-    int x = sink;
-    int *cptr, *cend;
-    int incr = cache_block/sizeof(int);
+    long int x = sink;
+    long int *cptr, *cend;
+    long int incr = cache_block/sizeof(long int);
     if (!cache_buf) {
 	cache_buf = malloc(cache_bytes);
 	if (!cache_buf) {
@@ -114,8 +107,8 @@ static void clear()
 	    exit(1);
 	}
     }
-    cptr = (int *) cache_buf;
-    cend = cptr + cache_bytes/sizeof(int);
+    cptr = (long int *) cache_buf;
+    cend = cptr + cache_bytes/sizeof(long int);
     while (cptr < cend) {
 	x += *cptr;
 	cptr += incr;
@@ -123,42 +116,38 @@ static void clear()
     sink = x;
 }
 
-/*
- * fcyc - Use K-best scheme to estimate the running time of function f
- */
-double fcyc(test_funct f, void *argp)
+double fcyc(test_funct f, void *args)
 {
     double result;
+    long reps = min_reps;
+    long r;
+    double cyc;
+    /* Increase reps until get meaningful times */
+    double sec = 0.0;
+    init_min_time();
+    while (sec < min_time) {
+	if (clear_cache)
+	    clear();
+	start_timer();
+	for (r = 0; r < reps; r++) {
+	    f(args);
+	}
+	sec = get_timer();
+	if (sec < min_time)
+	    reps += reps;
+    }
     init_sampler();
-    if (compensate) {
-	do {
-	    double cyc;
-	    if (clear_cache)
-		clear();
-	    start_comp_counter();
-	    f(argp);
-	    cyc = get_comp_counter();
+    do {
+	if (clear_cache)
+	    clear();
+	start_counter();
+	for (r = 0; r < reps; r++) {
+	    f(args);
+	}
+	cyc = (double) get_counter() / reps;
+	if (cyc > 0.0)
 	    add_sample(cyc);
-	} while (!has_converged() && samplecount < maxsamples);
-    } else {
-	do {
-	    double cyc;
-	    if (clear_cache)
-		clear();
-	    start_counter();
-	    f(argp);
-	    cyc = get_counter();
-	    add_sample(cyc);
-	} while (!has_converged() && samplecount < maxsamples);
-    }
-#ifdef DEBUG
-    {
-	int i;
-	printf(" %d smallest values: [", kbest);
-	for (i = 0; i < kbest; i++)
-	    printf("%.0f%s", values[i], i==kbest-1 ? "]\n" : ", ");
-    }
-#endif
+    } while (!has_converged() && samplecount < maxsamples);
     result = values[0];
 #if !KEEP_VALS
     free(values); 
@@ -167,26 +156,76 @@ double fcyc(test_funct f, void *argp)
     return result;  
 }
 
+double fsec(test_funct f, void *args)
+{
+    double result;
+    /* Increase reps until get meaningful times */
+    long reps = min_reps;
+    long r;
+    double sec = 0.0;
+    init_min_time();
+    while (sec < min_time) {
+	if (clear_cache)
+	    clear();
+	start_timer();
+	for (r = 0; r < reps; r++) {
+	    f(args);
+	}
+	sec = get_timer();
+	if (sec < min_time)
+	    reps += reps;
+	//	printf("uSecs = %.3f, reps = %ld\n", sec * 1e6, reps);
+    }
+    init_sampler();
+    //    printf("\nuSecs (reps=%ld):", reps);
+    do {
+	if (clear_cache)
+	    clear();
+	start_timer();
+	for (r = 0; r < reps; r++) {
+	    f(args);
+	}
+	sec = get_timer()/reps;
+	//	printf(" %.3f", sec * 1e6);
+	if (sec > 0.0)
+	    add_sample(sec);
+    } while (!has_converged() && samplecount < maxsamples);
+    result = values[0];
+    //    printf(" --> %.3f\n", result * 1e6);
+#if !KEEP_VALS
+    free(values); 
+    values = NULL;
+#endif
+    return result;  
+}
 
-/*************************************************************
- * Set the various parameters used by the measurement routines 
- ************************************************************/
 
-/* 
- * set_fcyc_clear_cache - When set, will run code to clear cache 
- *     before each measurement. 
- *     Default = 0
- */
+/***********************************************************/
+/* Set the various parameters used by measurement routines */
+
+
+/* Sets minimum number of timer ticks to resolve time.  Default = 100 */
+void set_fcyc_min_ticks(int t) {
+    min_ticks = t;
+}
+
+/* Sets minimum number of repetitions of function.  Default = 8 */
+void set_fcyc_min_reps(int r) {
+    min_reps = r;
+}
+
+/* When set, will run code to clear cache before each measurement 
+   Default = 0
+*/
 void set_fcyc_clear_cache(int clear)
 {
     clear_cache = clear;
 }
 
-/* 
- * set_fcyc_cache_size - Set size of cache to use when clearing cache 
- *     Default = 1<<19 (512KB)
- */
-void set_fcyc_cache_size(int bytes)
+/* Set size of cache to use when clearing cache 
+   Default = 1<<19 (512KB)
+*/
+void set_fcyc_cache_size(long int bytes)
 {
     if (bytes != cache_bytes) {
 	cache_bytes = bytes;
@@ -197,49 +236,33 @@ void set_fcyc_cache_size(int bytes)
     }
 }
 
-/* 
- * set_fcyc_cache_block - Set size of cache block 
- *     Default = 32
- */
-void set_fcyc_cache_block(int bytes) {
+/* Set size of cache block 
+   Default = 32
+*/
+void set_fcyc_cache_block(long int bytes) {
     cache_block = bytes;
 }
 
-
-/* 
- * set_fcyc_compensate- When set, will attempt to compensate for 
- *     timer interrupt overhead 
- *     Default = 0
- */
-void set_fcyc_compensate(int compensate_arg)
-{
-    compensate = compensate_arg;
-}
-
-/* 
- * set_fcyc_k - Value of K in K-best measurement scheme
- *     Default = 3
- */
-void set_fcyc_k(int k)
+/* Value of K in K-best
+   Default = 3
+*/
+void set_fcyc_k(long int k)
 {
     kbest = k;
 }
 
-/* 
- * set_fcyc_maxsamples - Maximum number of samples attempting to find 
- *     K-best within some tolerance.
- *     When exceeded, just return best sample found.
- *     Default = 20
- */
-void set_fcyc_maxsamples(int maxsamples_arg)
+/* Maximum number of samples attempting to find K-best within some tolerance.
+   When exceeded, just return best sample found.
+   Default = 20
+*/
+void set_fcyc_maxsamples(long int maxsamples_arg)
 {
     maxsamples = maxsamples_arg;
 }
 
-/* 
- * set_fcyc_epsilon - Tolerance required for K-best
- *     Default = 0.01
- */
+/* Tolerance required for K-best
+   Default = 0.01
+*/
 void set_fcyc_epsilon(double epsilon_arg)
 {
     epsilon = epsilon_arg;

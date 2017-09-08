@@ -1,22 +1,22 @@
-/* Routines for using cycle counter */
+/* Routines for timing functions */
 
-/* Start the counter */
-void start_counter();
+/*  minimum resolution of timer (secs) */
+extern const double timer_resolution;
 
-/* Get # cycles since counter started */
-double get_counter();
+/* Timer: measures in seconds */
 
-/* Measure overhead for counter */
-double ovhd();
+/* Start the timer */
+void start_timer();
+
+/* Get # seconds since timer started.  Returns 1e20 if detect timing anomaly */
+double get_timer();
 
 /* Determine clock rate of processor (using a default sleeptime) */
 double mhz(int verbose);
 
-/* Determine clock rate of processor, having more control over accuracy */
-double mhz_full(int verbose, int sleeptime);
+/* Counter: measures in clock cycles */
+/* Start the counter */
+void start_counter();
 
-/** Special counters that compensate for timer interrupt overhead */
-
-void start_comp_counter();
-
-double get_comp_counter();
+/* Get # cycles since counter started.  Returns 1e20 if detect timing anomaly */
+double get_counter();

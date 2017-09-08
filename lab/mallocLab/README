@@ -1,39 +1,45 @@
-#####################################################################
+#############################
 # CS:APP Malloc Lab
 # Handout files for students
-#
-# Copyright (c) 2002, R. Bryant and D. O'Hallaron, All rights reserved.
-# May not be used, modified, or copied without permission.
-#
-######################################################################
+#############################
 
 ***********
 Main Files:
 ***********
 
-mm.{c,h}	
-	Your solution malloc package. mm.c is the file that you
-	will be handing in, and is the only file you should modify.
+mdriver, mdriver-emulate
+        Once you've run make, run ./mdriver to test
+        your solution.  Run ./mdriver-emulate to make sure your
+        solution can handle 64-bit allocations
 
-mdriver.c	
-	The malloc driver that tests your mm.c file
-
-short{1,2}-bal.rep
-	Two tiny tracefiles to help you get started. 
-
-Makefile	
-	Builds the driver
+traces/
+	Directory that contains the trace files that the driver uses
+	to test your solution. Files with names of the form XXX-short.rep
+	contain very short traces that you can use for debugging.
 
 **********************************
 Other support files for the driver
 **********************************
-
 config.h	Configures the malloc lab driver
-fsecs.{c,h}	Wrapper function for the different timer packages
-clock.{c,h}	Routines for accessing the Pentium and Alpha cycle counters
-fcyc.{c,h}	Timer functions based on cycle counters
-ftimer.{c,h}	Timer functions based on interval timers and gettimeofday()
+clock.{c,h}	Low-level timing functions
+fcyc.{c,h}	Function-level timing functions
 memlib.{c,h}	Models the heap and sbrk function
+stree.{c,h}     Data structure used by the driver to check for
+		overlapping allocations
+Contech.so	Code that combines with LLVM compiler infrastructure
+		to enable sparse memory emulation
+macro-check.pl  Code to check for disallowed macro definitions
+driver.pl	Runs both mdriver and mdriver-emulate and generates
+		the autolab result.  (Not included with checkpoint)
+callibrate.pl   Code to generate benchmark throughput
+throughputs.txt Benchmark throughputs, indexed by CPU type
+
+***********************
+Example malloc packages
+***********************
+mm.c            Empty malloc package
+mm-naive.c      Fast but extremely memory-inefficient package
+mm-baseline.c   Implicit-list allocator to use as starting point
 
 *******************************
 Building and running the driver
@@ -42,11 +48,20 @@ To build the driver, type "make" to the shell.
 
 To run the driver on a tiny test trace:
 
-	unix> mdriver -V -f short1-bal.rep
-
-The -V option prints out helpful tracing and summary information.
+	unix> ./mdriver -V -f traces/malloc.rep
 
 To get a list of the driver flags:
 
-	unix> mdriver -h
+	unix> ./mdriver -h
+
+The -V option prints out helpful tracing information
+
+You can use mdriver-emulate to test the correctness of your code in
+handling 64-bit addresses:
+
+	unix> ./mdriver-emulate
+
+You should see the exact same utilization numbers as you did with the
+regular driver.  No timing is done, and so the time and throughput
+numbers show up as zeros.
 

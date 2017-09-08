@@ -1,279 +1,143 @@
-/* 
- * clock.c - Routines for using the cycle counters on x86, 
- *           Alpha, and Sparc boxes.
- * 
- * Copyright (c) 2002, R. Bryant and D. O'Hallaron, All rights reserved.
- * May not be used, modified, or copied without permission.
+/* clock.c
+ * Retrofitted to use thread-specific timers
+ * and to get clock information from /proc/cpuinfo
+ * (C) R. E. Bryant, 2010
+ *
+ * Retrofitted to measure absolute time in seconds and then convert to cycles
+ * Old time stamp could removed, since time stamp counter no longer tracks clock cycles
+ * (C) R. E. Bryant, 2016
+ *
  */
+
+/* If defined, will use clock_gettime, rather than gettimeofday */
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <sys/times.h>
+#include <string.h>
+#ifdef USE_TOD
+#include <sys/time.h>
+#else
+#include <time.h>
+#endif
 #include "clock.h"
 
+int gverbose = 1;
 
-/******************************************************* 
- * Machine dependent functions 
- *
- * Note: the constants __i386__ and  __alpha
- * are set by GCC when it calls the C preprocessor
- * You can verify this for yourself using gcc -v.
- *******************************************************/
-
-#if defined(__i386__)  
-/*******************************************************
- * Pentium versions of start_counter() and get_counter()
- *******************************************************/
-
-
-/* $begin x86cyclecounter */
-/* Initialize the cycle counter */
-static unsigned cyc_hi = 0;
-static unsigned cyc_lo = 0;
-
-
-/* Set *hi and *lo to the high and low order bits  of the cycle counter.  
-   Implementation requires assembly code to use the rdtsc instruction. */
-void access_counter(unsigned *hi, unsigned *lo)
-{
-    asm("rdtsc; movl %%edx,%0; movl %%eax,%1"   /* Read cycle counter */
-	: "=r" (*hi), "=r" (*lo)                /* and move results to */
-	: /* No input */                        /* the two outputs */
-	: "%edx", "%eax");
-}
-
-/* Record the current value of the cycle counter. */
-void start_counter()
-{
-    access_counter(&cyc_hi, &cyc_lo);
-}
-
-/* Return the number of cycles since the last call to start_counter. */
-double get_counter()
-{
-    unsigned ncyc_hi, ncyc_lo;
-    unsigned hi, lo, borrow;
-    double result;
-
-    /* Get cycle counter */
-    access_counter(&ncyc_hi, &ncyc_lo);
-
-    /* Do double precision subtraction */
-    lo = ncyc_lo - cyc_lo;
-    borrow = lo > ncyc_lo;
-    hi = ncyc_hi - cyc_hi - borrow;
-    result = (double) hi * (1 << 30) * 4 + lo;
-    if (result < 0) {
-	fprintf(stderr, "Error: counter returns neg value: %.0f\n", result);
-    }
-    return result;
-}
-/* $end x86cyclecounter */
-
-#elif defined(__alpha)
-
-/****************************************************
- * Alpha versions of start_counter() and get_counter()
- ***************************************************/
-
-/* Initialize the cycle counter */
-static unsigned cyc_hi = 0;
-static unsigned cyc_lo = 0;
-
-
-/* Use Alpha cycle timer to compute cycles.  Then use
-   measured clock speed to compute seconds 
-*/
-
-/*
- * counterRoutine is an array of Alpha instructions to access 
- * the Alpha's processor cycle counter. It uses the rpcc 
- * instruction to access the counter. This 64 bit register is 
- * divided into two parts. The lower 32 bits are the cycles 
- * used by the current process. The upper 32 bits are wall 
- * clock cycles. These instructions read the counter, and 
- * convert the lower 32 bits into an unsigned int - this is the 
- * user space counter value.
- * NOTE: The counter has a very limited time span. With a 
- * 450MhZ clock the counter can time things for about 9 
- * seconds. */
-static unsigned int counterRoutine[] =
-{
-    0x601fc000u,
-    0x401f0000u,
-    0x6bfa8001u
-};
-
-/* Cast the above instructions into a function. */
-static unsigned int (*counter)(void)= (void *)counterRoutine;
-
-
-void start_counter()
-{
-    /* Get cycle counter */
-    cyc_hi = 0;
-    cyc_lo = counter();
-}
-
-double get_counter()
-{
-    unsigned ncyc_hi, ncyc_lo;
-    unsigned hi, lo, borrow;
-    double result;
-    ncyc_lo = counter();
-    ncyc_hi = 0;
-    lo = ncyc_lo - cyc_lo;
-    borrow = lo > ncyc_lo;
-    hi = ncyc_hi - cyc_hi - borrow;
-    result = (double) hi * (1 << 30) * 4 + lo;
-    if (result < 0) {
-	fprintf(stderr, "Error: Cycle counter returning negative value: %.0f\n", result);
-    }
-    return result;
-}
-
+/* Timer granularity */
+#ifdef USE_TOD
+const double timer_resolution = 1e-6;
 #else
+const double timer_resolution = 1e-9;
+#endif
 
-/****************************************************************
- * All the other platforms for which we haven't implemented cycle
- * counter routines. Newer models of sparcs (v8plus) have cycle
- * counters that can be accessed from user programs, but since there
- * are still many sparc boxes out there that don't support this, we
- * haven't provided a Sparc version here.
- ***************************************************************/
+/* Keep track of clock speed */
+double cpu_mhz = 0.0;
 
-void start_counter()
-{
-    printf("ERROR: You are trying to use a start_counter routine in clock.c\n");
-    printf("that has not been implemented yet on this platform.\n");
-    printf("Please choose another timing package in config.h.\n");
-    exit(1);
+/* Get megahertz from /etc/proc */
+#define MAXBUF 512
+
+
+double core_mhz(int verbose) {
+    static char buf[MAXBUF];
+    FILE *fp = fopen("/proc/cpuinfo", "r");
+    cpu_mhz = 0.0;
+
+    if (!fp) {
+	fprintf(stderr, "Can't open /proc/cpuinfo to get clock information\n");
+	cpu_mhz = 1000.0;
+	return cpu_mhz;
+    }
+    while (fgets(buf, MAXBUF, fp)) {
+	if (strstr(buf, "cpu MHz")) {
+	    double cpu_mhz = 0.0;
+	    sscanf(buf, "cpu MHz\t: %lf", &cpu_mhz);
+	    break;
+	}
+    }
+    fclose(fp);
+    if (cpu_mhz == 0.0) {
+	fprintf(stderr, "Can't open /proc/cpuinfo to get clock information\n");
+	cpu_mhz = 1000.0;
+	return cpu_mhz;
+    }
+    if (verbose) {
+	printf("Processor Clock Rate ~= %.4f GHz (extracted from file)\n", cpu_mhz * 0.001);
+    }
+    return cpu_mhz;
 }
 
-double get_counter() 
-{
-    printf("ERROR: You are trying to use a get_counter routine in clock.c\n");
-    printf("that has not been implemented yet on this platform.\n");
-    printf("Please choose another timing package in config.h.\n");
-    exit(1);
+double mhz(int verbose) {
+    double val = core_mhz(verbose);
+    return val;
 }
+
+#ifdef USE_TOD
+/* Use time-of-day timer */
+struct timeval last_time;
+struct timeval new_time;
+#else
+/* Use nanosecond timer */
+struct timespec last_time;
+struct timespec new_time;
+
+/* Use thread clock */
+#define CLKT CLOCK_THREAD_CPUTIME_ID
 #endif
 
 
-
-
-/*******************************
- * Machine-independent functions
- ******************************/
-double ovhd()
+void start_timer()
 {
-    /* Do it twice to eliminate cache effects */
-    int i;
-    double result;
-
-    for (i = 0; i < 2; i++) {
-	start_counter();
-	result = get_counter();
+    int rval;
+#ifdef USE_TOD
+    rval = gettimeofday(&last_time, NULL);
+#else
+    rval = clock_gettime(CLKT, &last_time);
+#endif    
+    if (rval != 0) {
+	fprintf(stderr, "Couldn't get time\n");
+	exit(1);
     }
-    return result;
 }
 
-/* $begin mhz */
-/* Estimate the clock rate by measuring the cycles that elapse */ 
-/* while sleeping for sleeptime seconds */
-double mhz_full(int verbose, int sleeptime)
+double get_timer()
 {
-    double rate;
-
-    start_counter();
-    sleep(sleeptime);
-    rate = get_counter() / (1e6*sleeptime);
-    if (verbose) 
-	printf("Processor clock rate ~= %.1f MHz\n", rate);
-    return rate;
-}
-/* $end mhz */
-
-/* Version using a default sleeptime */
-double mhz(int verbose)
-{
-    return mhz_full(verbose, 2);
-}
-
-/** Special counters that compensate for timer interrupt overhead */
-
-static double cyc_per_tick = 0.0;
-
-#define NEVENT 100
-#define THRESHOLD 1000
-#define RECORDTHRESH 3000
-
-/* Attempt to see how much time is used by timer interrupt */
-static void callibrate(int verbose)
-{
-    double oldt;
-    struct tms t;
-    clock_t oldc;
-    int e = 0;
-
-    times(&t);
-    oldc = t.tms_utime;
-    start_counter();
-    oldt = get_counter();
-    while (e <NEVENT) {
-	double newt = get_counter();
-
-	if (newt-oldt >= THRESHOLD) {
-	    clock_t newc;
-	    times(&t);
-	    newc = t.tms_utime;
-	    if (newc > oldc) {
-		double cpt = (newt-oldt)/(newc-oldc);
-		if ((cyc_per_tick == 0.0 || cyc_per_tick > cpt) && cpt > RECORDTHRESH)
-		    cyc_per_tick = cpt;
-		/*
-		  if (verbose)
-		  printf("Saw event lasting %.0f cycles and %d ticks.  Ratio = %f\n",
-		  newt-oldt, (int) (newc-oldc), cpt);
-		*/
-		e++;
-		oldc = newc;
-	    }
-	    oldt = newt;
-	}
+    int rval;
+    double delta_secs = 0.0;
+#ifdef USE_TOD
+    rval = gettimeofday(&new_time, NULL);
+#else
+    rval = clock_gettime(CLKT, &new_time);
+#endif    
+    if (rval != 0) {
+	fprintf(stderr, "Couldn't get time\n");
+	exit(1);
     }
-    if (verbose)
-	printf("Setting cyc_per_tick to %f\n", cyc_per_tick);
+#ifdef USE_TOD
+    delta_secs = 1.0 * (new_time.tv_sec - last_time.tv_sec) + 1e-6 * (new_time.tv_usec - last_time.tv_usec);
+#else
+    delta_secs = 1.0 * (new_time.tv_sec - last_time.tv_sec) + 1e-9 * (new_time.tv_nsec - last_time.tv_nsec);
+#if 0
+    printf("Delta %ld.%ld --> %ld.%ld (%ld + 1e-9*%ld = %.f)\n",
+	   (long) last_time.tv_sec, (long) last_time.tv_nsec,
+	   (long) new_time.tv_sec, (long) new_time.tv_nsec,
+	   (long) (new_time.tv_sec - last_time.tv_sec),
+	   (long) (new_time.tv_nsec - last_time.tv_nsec),
+	   delta_secs);
+#endif
+#endif    
+    return delta_secs;
 }
 
-static clock_t start_tick = 0;
-
-void start_comp_counter() 
+void start_counter()
 {
-    struct tms t;
-
-    if (cyc_per_tick == 0.0)
-	callibrate(0);
-    times(&t);
-    start_tick = t.tms_utime;
-    start_counter();
+    if (cpu_mhz == 0.0)
+	mhz(gverbose);
+    start_timer();
 }
 
-double get_comp_counter() 
+double get_counter()
 {
-    double time = get_counter();
-    double ctime;
-    struct tms t;
-    clock_t ticks;
-
-    times(&t);
-    ticks = t.tms_utime - start_tick;
-    ctime = time - ticks*cyc_per_tick;
-    /*
-      printf("Measured %.0f cycles.  Ticks = %d.  Corrected %.0f cycles\n",
-      time, (int) ticks, ctime);
-    */
-    return ctime;
+    double delta_secs = get_timer();
+    return delta_secs * cpu_mhz * 1e6;
 }
 
