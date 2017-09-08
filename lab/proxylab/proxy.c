@@ -12,6 +12,7 @@ static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64;
 
 void proxy_begin(int connfd);
 void client_error(int fd, char *cause, char *errnum, char *shormsg, char *longmsg);
+int parse_uri(char *uri, char *hostname, char *path, char *port);
 
 int main(int argc, char *argv[])
 {
@@ -40,8 +41,8 @@ int main(int argc, char *argv[])
 
 void proxy_begin(int connfd){
 	char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
-	char filename[MAXLINE];
-	rio_t rio;
+	char serverHost[MAXLINE], serverPath[MAXLINE], serverPort[MAXLINE];
+	rio_t rio, serverRio;
 
 	Rio_readinitb(&rio, connfd);
 	if(!Rio_readlineb(&rio, buf, MAXLINE)){
@@ -50,15 +51,48 @@ void proxy_begin(int connfd){
 		return;
 	}
 
-	printf("Server received %s\n", buf);
+	printf("Server received %s\n", buf);	//for debugging
 	sscanf(buf, "%s %s %s", method, uri, version);
+
 	if(strcasecmp(method, "GET")){
 		client_error(connfd, method, "501", "Not Implemented",
 				"Proxy does not implement this method at this time");
 		return;
 	}
 
-	//read request
+	//parse_uri
+	if(parse_uri(uri, serverHost, serverPath, serverPort) < 0) {
+		client_error(connfd, method, "808", "Wrong URI",
+				"This uri doesn't exist");
+		printf("ERROR\n");
+		return;
+	}
+
+//	debug
+//	printf("ServerName : %s\n", serverHost);
+//	printf("ServerPath : %s\n", serverPath);
+//	printf("ServerPort : %s\n", serverPort);
+
+	//connection to server
+	int serverfd = Open_clientfd(serverHost, serverPort);
+
+	Rio_readinitb(&serverRio, serverfd);
+
+	//sending method uri version
+	Rio_writen(serverfd, buf, strlen(buf));
+
+	int n;
+	while((n = Rio_readnb(&serverRio, buf, MAXLINE)) > 0){
+		printf("%s\n", buf);
+	}
+
+}
+
+void build_request_header(rio_t *rp, char *header, char *hostname) {
+	char buf[MAXLINE];
+
+	sprintf(header, "User-Agent: %s\r\n", user_agent_hdr);
+	return;
 }
 
 void read_request_headers(rio_t *rp) {
@@ -73,30 +107,60 @@ void read_request_headers(rio_t *rp) {
 	return ;
 }
 
-int parse_uri(char *uri, char *filename, char *cgiargs){
-	char *ptr;
-	if(!strstr(uri, "cgi-bin")) {
-		//static content return 1
-		strcpy(filename, ".");
-		strcat(filename, uri);
-		if(uri[strlen(uri)-1] == '/')
-			strcat(filename, "home.html");
-		return 1;
-	}else {
-		//dynamic content return 0
-		if(ptr) {
-			strcpy(cgiargs, ptr+1);
-			*ptr = '\0';
-		}else {
-			strcpy(cgiargs, "");
-		}
-		strcpy(filename, ".");
-		strcat(filename, uri);
-		return 0;
+
+//return -1 if it's fail to parse uri , return 0 if success
+int parse_uri(char *uri, char *hostname, char *path, char *port){
+
+	char *portStart, *portEnd, *hostStart, *hostEnd;
+	int len;
+
+	strcpy(port, "");
+	strcpy(path, "");
+	strcpy(hostname, "");
+
+	//start with http://
+	if(strncasecmp(uri, "http://", 7) != 0) {
+		return -1;
 	}
+
+	hostStart  = uri + 7;
+	portStart = index(hostStart, ':');
+
+//	printf("portStart : %s\n", portStart);		debug
+
+	if(portStart == NULL) {
+		//if port is not specified
+		strcat(port, "80");		//default port is 80
+		hostEnd = index(hostStart, '/');
+		//if not end with / character just until the end of uri
+		if(hostEnd == NULL)
+			hostEnd = uri + strlen(uri);
+		portEnd = hostEnd;
+	}else {
+		portStart += 1;
+		portEnd = index(portStart, '/');
+//		printf("portEnd : %s\n", portEnd);		debug
+
+		len = portEnd - portStart;
+		strncat(port, portStart, len);
+		hostEnd = hostStart + (portStart - hostStart);
+	}
+
+
+	//hostname setting
+	len = hostEnd - hostStart;
+	strncat(hostname, hostStart, len);
+//	printf("hostname : %s\n", hostname);		debug
+
+
+	//path setting
+	strcat(path, portEnd);
+//	printf("path : %s\n", path);				debug
+	return 0;
+
 }
 
-void client_error(int fd, char *cause, char *errnum, char *shormsg, char *longmsg){
+void client_error(int fd, char *cause, char *errnum, char *shormsg, char *longmsg) {
 	char buf[MAXLINE], body[MAXBUF];
 
 	//build HTTP response body

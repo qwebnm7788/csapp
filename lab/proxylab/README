@@ -47,3 +47,9 @@ nop-server.py
 tiny
     Tiny Web server from the CS:APP text
 
+
+2017/09/08	
+	입력된 주소 parsing 성공
+	-> parsing한 정보를 이용하여 request header를 형성하여 실제 그 주소의 서버에
+	그 헤더를 보내주고, 패킷을 수신하는 부분작업 필요
+	+ 헤더의 모든 줄의 마지막에는 \r\n이 들어간다.
