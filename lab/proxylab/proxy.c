@@ -34,6 +34,8 @@ int main(int argc, char *argv[])
 				client_port, MAXLINE, 0);
 		printf("Connected to (%s, %s)\n", client_hostname, client_port);
 		proxy_begin(connfd);
+
+		printf("Disconnected from (%s, %s)\n", client_hostname, client_port);
 		close(connfd);
 	}
 	return 0;
@@ -72,9 +74,13 @@ void proxy_begin(int connfd){
 //	printf("ServerName : %s\n", serverHost);
 //	printf("ServerPath : %s\n", serverPath);
 //	printf("ServerPort : %s\n", serverPort);
+//	return;
 
 	//connection to server
 	int serverfd = Open_clientfd(serverHost, serverPort);
+
+
+	printf("Sending this info to server\n%s\n", buf);
 
 	Rio_readinitb(&serverRio, serverfd);
 
@@ -83,7 +89,8 @@ void proxy_begin(int connfd){
 
 	int n;
 	while((n = Rio_readnb(&serverRio, buf, MAXLINE)) > 0){
-		printf("%s\n", buf);
+		Rio_writen(connfd, buf, n);
+		//printf("%s\n", buf);
 	}
 
 }
@@ -126,7 +133,7 @@ int parse_uri(char *uri, char *hostname, char *path, char *port){
 	hostStart  = uri + 7;
 	portStart = index(hostStart, ':');
 
-//	printf("portStart : %s\n", portStart);		debug
+//	printf("portStart : %s\n", portStart);		//debug
 
 	if(portStart == NULL) {
 		//if port is not specified
@@ -139,23 +146,23 @@ int parse_uri(char *uri, char *hostname, char *path, char *port){
 	}else {
 		portStart += 1;
 		portEnd = index(portStart, '/');
-//		printf("portEnd : %s\n", portEnd);		debug
+//		printf("portEnd : %s\n", portEnd);		//debug
 
 		len = portEnd - portStart;
 		strncat(port, portStart, len);
-		hostEnd = hostStart + (portStart - hostStart);
+		hostEnd = hostStart + (portStart - hostStart) - 1;
 	}
 
 
 	//hostname setting
 	len = hostEnd - hostStart;
 	strncat(hostname, hostStart, len);
-//	printf("hostname : %s\n", hostname);		debug
+//	printf("hostname : %s\n", hostname);		//debug
 
 
 	//path setting
 	strcat(path, portEnd);
-//	printf("path : %s\n", path);				debug
+//	printf("path : %s\n", path);				//debug
 	return 0;
 
 }
